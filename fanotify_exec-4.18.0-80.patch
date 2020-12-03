@@ -1,0 +1,278 @@
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fanotify/fanotify.c linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fanotify/fanotify.c
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fanotify/fanotify.c	2020-12-02 23:08:26.240881902 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fanotify/fanotify.c	2020-12-02 23:54:52.488539552 -0500
+@@ -11,9 +11,13 @@
+ #include <linux/types.h>
+ #include <linux/wait.h>
+ #include <linux/audit.h>
++#include <linux/spinlock.h>
+ 
+ #include "fanotify.h"
+ 
++unsigned long max_time_do_perm;
++DEFINE_SPINLOCK(max_time_lock);
++
+ static bool should_merge(struct fsnotify_event *old_fsn,
+ 			 struct fsnotify_event *new_fsn)
+ {
+@@ -159,6 +163,7 @@ struct fanotify_event_info *fanotify_all
+ 			return NULL;
+ 		event = &pevent->fae;
+ 		pevent->response = 0;
++		pevent->start_time = jiffies;
+ 		goto init;
+ 	}
+ 	event = kmem_cache_alloc(fanotify_event_cachep, gfp);
+@@ -197,6 +202,8 @@ static int fanotify_handle_event(struct
+ 	BUILD_BUG_ON(FAN_OPEN_PERM != FS_OPEN_PERM);
+ 	BUILD_BUG_ON(FAN_ACCESS_PERM != FS_ACCESS_PERM);
+ 	BUILD_BUG_ON(FAN_ONDIR != FS_ISDIR);
++	BUILD_BUG_ON(FAN_OPEN_EXEC != FS_OPEN_EXEC);
++	BUILD_BUG_ON(FAN_OPEN_EXEC_PERM != FS_OPEN_EXEC_PERM);
+ 
+ 	if (!fanotify_should_send_event(iter_info, mask, data, data_type))
+ 		return 0;
+@@ -263,8 +270,14 @@ static void fanotify_free_event(struct f
+ 	path_put(&event->path);
+ 	put_pid(event->tgid);
+ 	if (fanotify_is_perm_event(fsn_event->mask)) {
+-		kmem_cache_free(fanotify_perm_event_cachep,
+-				FANOTIFY_PE(fsn_event));
++		struct fanotify_perm_event_info *pevent = FANOTIFY_PE(fsn_event);
++		unsigned long cost = jiffies_to_usecs(jiffies - pevent->start_time);
++		spin_lock(&max_time_lock);
++		if (cost > max_time_do_perm)
++			max_time_do_perm = cost;
++		spin_unlock(&max_time_lock);
++
++		kmem_cache_free(fanotify_perm_event_cachep, pevent);
+ 		return;
+ 	}
+ 	kmem_cache_free(fanotify_event_cachep, event);
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fanotify/fanotify.h linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fanotify/fanotify.h
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fanotify/fanotify.h	2020-12-02 23:08:26.240881902 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fanotify/fanotify.h	2020-12-02 23:24:01.445319593 -0500
+@@ -31,6 +31,7 @@ struct fanotify_event_info {
+  */
+ struct fanotify_perm_event_info {
+ 	struct fanotify_event_info fae;
++	unsigned long start_time;
+ 	int response;	/* userspace answer to question */
+ 	int fd;		/* fd we passed to userspace for this event */
+ };
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fanotify/fanotify_user.c linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fanotify/fanotify_user.c
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fanotify/fanotify_user.c	2020-12-02 23:08:26.240881902 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fanotify/fanotify_user.c	2020-12-03 00:17:07.042939154 -0500
+@@ -45,6 +45,22 @@ extern const struct fsnotify_ops fanotif
+ struct kmem_cache *fanotify_mark_cache __read_mostly;
+ struct kmem_cache *fanotify_event_cachep __read_mostly;
+ struct kmem_cache *fanotify_perm_event_cachep __read_mostly;
++extern unsigned long  max_time_do_perm;
++
++#ifdef CONFIG_SYSCTL
++#include <linux/sysctl.h>
++
++struct ctl_table fanotify_table[] = {
++	{
++		.procname	= "max_time_do_perm",
++		.data		= &max_time_do_perm,
++		.maxlen		= sizeof(unsigned long),
++		.mode		= 0444,
++		.proc_handler	= proc_doulongvec_minmax,
++	},
++	{ }
++};
++#endif /* CONFIG_SYSCTL */
+ 
+ /*
+  * Get an fsnotify notification event if one exists and is small
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fsnotify.c linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fsnotify.c
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/fs/notify/fsnotify.c	2020-12-02 23:08:26.240881902 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/fs/notify/fsnotify.c	2020-12-02 23:24:01.445319593 -0500
+@@ -392,7 +392,7 @@ static __init int fsnotify_init(void)
+ {
+ 	int ret;
+ 
+-	BUG_ON(hweight32(ALL_FSNOTIFY_BITS) != 23);
++	BUG_ON(hweight32(ALL_FSNOTIFY_BITS) != 25);
+ 
+ 	ret = init_srcu_struct(&fsnotify_mark_srcu);
+ 	if (ret)
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/linux/fanotify.h linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/linux/fanotify.h
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/linux/fanotify.h	2020-12-02 23:08:25.573876175 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/linux/fanotify.h	2020-12-02 23:24:01.445319593 -0500
+@@ -3,7 +3,10 @@
+ #define _LINUX_FANOTIFY_H
+ 
+ #include <uapi/linux/fanotify.h>
++#include <linux/sysctl.h>
+ 
+ /* not valid from userspace, only kernel internal */
+ #define FAN_MARK_ONDIR		0x00000100
++
++extern struct ctl_table fanotify_table[]; /* for sysctl */
+ #endif /* _LINUX_FANOTIFY_H */
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/linux/fsnotify_backend.h linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/linux/fsnotify_backend.h
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/linux/fsnotify_backend.h	2020-12-02 23:08:25.573876175 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/linux/fsnotify_backend.h	2020-12-02 23:24:01.445319593 -0500
+@@ -38,6 +38,7 @@
+ #define FS_DELETE		0x00000200	/* Subfile was deleted */
+ #define FS_DELETE_SELF		0x00000400	/* Self was deleted */
+ #define FS_MOVE_SELF		0x00000800	/* Self was moved */
++#define FS_OPEN_EXEC            0x00001000      /* File was opened for exec */
+ 
+ #define FS_UNMOUNT		0x00002000	/* inode on umount fs */
+ #define FS_Q_OVERFLOW		0x00004000	/* Event queued overflowed */
+@@ -45,6 +46,7 @@
+ 
+ #define FS_OPEN_PERM		0x00010000	/* open event in an permission hook */
+ #define FS_ACCESS_PERM		0x00020000	/* access event in a permissions hook */
++#define FS_OPEN_EXEC_PERM	0x00040000	/* open/exec event in a permission hook */
+ 
+ #define FS_EXCL_UNLINK		0x04000000	/* do not send events if object is unlinked */
+ #define FS_ISDIR		0x40000000	/* event occurred against dir */
+@@ -62,11 +64,12 @@
+ #define FS_EVENTS_POSS_ON_CHILD   (FS_ACCESS | FS_MODIFY | FS_ATTRIB |\
+ 				   FS_CLOSE_WRITE | FS_CLOSE_NOWRITE | FS_OPEN |\
+ 				   FS_MOVED_FROM | FS_MOVED_TO | FS_CREATE |\
+-				   FS_DELETE | FS_OPEN_PERM | FS_ACCESS_PERM)
++				   FS_DELETE | FS_OPEN_PERM | FS_ACCESS_PERM |\
++				   FS_OPEN_EXEC | FS_OPEN_EXEC_PERM)
+ 
+ #define FS_MOVE			(FS_MOVED_FROM | FS_MOVED_TO)
+ 
+-#define ALL_FSNOTIFY_PERM_EVENTS (FS_OPEN_PERM | FS_ACCESS_PERM)
++#define ALL_FSNOTIFY_PERM_EVENTS (FS_OPEN_PERM | FS_ACCESS_PERM | FS_OPEN_EXEC_PERM)
+ 
+ /* Events that can be reported to backends */
+ #define ALL_FSNOTIFY_EVENTS (FS_ACCESS | FS_MODIFY | FS_ATTRIB | \
+@@ -74,7 +77,8 @@
+ 			     FS_MOVED_FROM | FS_MOVED_TO | FS_CREATE | \
+ 			     FS_DELETE | FS_DELETE_SELF | FS_MOVE_SELF | \
+ 			     FS_UNMOUNT | FS_Q_OVERFLOW | FS_IN_IGNORED | \
+-			     FS_OPEN_PERM | FS_ACCESS_PERM | FS_DN_RENAME)
++			     FS_OPEN_PERM | FS_ACCESS_PERM | FS_DN_RENAME | \
++			     FS_OPEN_EXEC | FS_OPEN_EXEC_PERM)
+ 
+ /* Extra flags that may be reported with event or control handling of events */
+ #define ALL_FSNOTIFY_FLAGS  (FS_EXCL_UNLINK | FS_ISDIR | FS_IN_ONESHOT | \
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/linux/fsnotify.h linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/linux/fsnotify.h
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/linux/fsnotify.h	2020-12-02 23:08:25.573876175 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/linux/fsnotify.h	2020-12-02 23:24:01.445319593 -0500
+@@ -26,6 +26,21 @@ static inline int fsnotify_parent(const
+ 	return __fsnotify_parent(path, dentry, mask);
+ }
+ 
++/*
++ * Simple wrapper to consolidate calls fsnotify_parent()/fsnotify() when
++ * an event is on a path.
++ */
++static inline int fsnotify_path(struct inode *inode, const struct path *path,
++                                __u32 mask)
++{
++        int ret = fsnotify_parent(path, NULL, mask);
++
++        if (ret)
++                return ret;
++        return fsnotify(inode, mask, path, FSNOTIFY_EVENT_PATH, NULL, 0);
++}
++
++
+ /* simple call site for access decisions */
+ static inline int fsnotify_perm(struct file *file, int mask)
+ {
+@@ -38,12 +53,18 @@ static inline int fsnotify_perm(struct f
+ 		return 0;
+ 	if (!(mask & (MAY_READ | MAY_OPEN)))
+ 		return 0;
+-	if (mask & MAY_OPEN)
++	if (mask & MAY_OPEN) {
+ 		fsnotify_mask = FS_OPEN_PERM;
+-	else if (mask & MAY_READ)
++		if (file->f_flags & __FMODE_EXEC) {
++			ret = fsnotify_path(inode, path, FS_OPEN_EXEC_PERM);
++
++			if (ret)
++				return ret;
++		}
++
++	} else if (mask & MAY_READ) {
+ 		fsnotify_mask = FS_ACCESS_PERM;
+-	else
+-		BUG();
++	}
+ 
+ 	ret = fsnotify_parent(path, NULL, fsnotify_mask);
+ 	if (ret)
+@@ -215,6 +236,8 @@ static inline void fsnotify_open(struct
+ 
+ 	if (S_ISDIR(inode->i_mode))
+ 		mask |= FS_ISDIR;
++	if (file->f_flags & __FMODE_EXEC)
++		mask |= FS_OPEN_EXEC;
+ 
+ 	fsnotify_parent(path, NULL, mask);
+ 	fsnotify(inode, mask, path, FSNOTIFY_EVENT_PATH, NULL, 0);
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/uapi/linux/fanotify.h linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/uapi/linux/fanotify.h
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/include/uapi/linux/fanotify.h	2020-12-02 23:08:25.624876613 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/include/uapi/linux/fanotify.h	2020-12-02 23:24:01.445319593 -0500
+@@ -10,11 +10,14 @@
+ #define FAN_CLOSE_WRITE		0x00000008	/* Writtable file closed */
+ #define FAN_CLOSE_NOWRITE	0x00000010	/* Unwrittable file closed */
+ #define FAN_OPEN		0x00000020	/* File was opened */
++#define FAN_OPEN_EXEC           0x00001000      /* File was opened for exec */
++
+ 
+ #define FAN_Q_OVERFLOW		0x00004000	/* Event queued overflowed */
+ 
+ #define FAN_OPEN_PERM		0x00010000	/* File open in perm check */
+ #define FAN_ACCESS_PERM		0x00020000	/* File accessed in perm check */
++#define FAN_OPEN_EXEC_PERM	0x00040000	/* File open/exec in perm check */
+ 
+ #define FAN_ONDIR		0x40000000	/* event occurred against dir */
+ 
+@@ -69,13 +72,14 @@
+ #define FAN_ALL_EVENTS (FAN_ACCESS |\
+ 			FAN_MODIFY |\
+ 			FAN_CLOSE |\
+-			FAN_OPEN)
++			FAN_OPEN  |\
++			FAN_OPEN_EXEC)
+ 
+ /*
+  * All events which require a permission response from userspace
+  */
+ #define FAN_ALL_PERM_EVENTS (FAN_OPEN_PERM |\
+-			     FAN_ACCESS_PERM)
++			     FAN_ACCESS_PERM | FAN_OPEN_EXEC_PERM)
+ 
+ #define FAN_ALL_OUTGOING_EVENTS	(FAN_ALL_EVENTS |\
+ 				 FAN_ALL_PERM_EVENTS |\
+diff -Nurp linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/kernel/sysctl.c linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/kernel/sysctl.c
+--- linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64.orig/kernel/sysctl.c	2020-12-02 23:08:26.206881610 -0500
++++ linux-4.18.0-80.11.2.el8_0.centos.plus.x86_64/kernel/sysctl.c	2020-12-02 23:24:01.446319600 -0500
+@@ -153,6 +153,10 @@ static unsigned long hung_task_timeout_m
+ #ifdef CONFIG_INOTIFY_USER
+ #include <linux/inotify.h>
+ #endif
++#ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS 
++#include <linux/fanotify.h>
++#endif
++
+ #ifdef CONFIG_SPARC
+ #endif
+ 
+@@ -1778,6 +1782,13 @@ static struct ctl_table fs_table[] = {
+ 		.child		= inotify_table,
+ 	},
+ #endif	
++#ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS 
++	{
++		.procname	= "fanotify",
++		.mode		= 0555,
++		.child		= fanotify_table,
++	},
++#endif	
+ #ifdef CONFIG_EPOLL
+ 	{
+ 		.procname	= "epoll",
