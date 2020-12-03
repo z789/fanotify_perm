@@ -1,4 +1,4 @@
-从kernel v4.20移植 fanotify的 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能到v3.10.0，并增加FAN_*_PERM的熔断功能。即在内核中每个group增加一个定时器，周期扫描*_PERM事件,如果接受返回时间超时，就模拟应用层发送FAN_ALLOW。
+从kernel v4.20移植 fanotify的 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能到v3.10.0，并增加FAN_*_PERM事件的超时处理功能。即在内核中每个group增加一个定时器，周期扫描*_PERM事件,如果接受返回时间超时，就模拟应用层发送FAN_ALLOW。
 
 /proc/sys/fs/fanotify/timeout_response, 等待应用层response的最大时间，单位msec
 默认值是HZ/10， 范围是[HZ/25, HZ*3]
