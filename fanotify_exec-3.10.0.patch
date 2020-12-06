@@ -1,7 +1,7 @@
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.c linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify.c
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.c	2020-12-05 10:41:36.664591423 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify.c	2020-12-05 12:32:44.454752891 +0800
-@@ -9,9 +9,15 @@
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.c	2020-12-05 18:12:52.381013400 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify.c	2020-12-06 23:46:20.544130091 +0800
+@@ -9,9 +9,18 @@
  #include <linux/types.h>
  #include <linux/wait.h>
  #include <linux/audit.h>
@@ -12,12 +12,15 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.c 
 +#ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
 +unsigned long max_time_do_perm;
 +DEFINE_SPINLOCK(max_time_lock);
++
++atomic64_t  count_timeout_perm_event = ATOMIC64_INIT(0);;
++extern unsigned long time_wait_response;
 +#endif
 +
  static bool should_merge(struct fsnotify_event *old_fsn,
  			 struct fsnotify_event *new_fsn)
  {
-@@ -153,6 +159,7 @@ struct fanotify_event_info *fanotify_all
+@@ -153,6 +162,7 @@ struct fanotify_event_info *fanotify_all
  			return NULL;
  		event = &pevent->fae;
  		pevent->response = 0;
@@ -25,7 +28,7 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.c 
  		goto init;
  	}
  #endif
-@@ -192,6 +199,8 @@ static int fanotify_handle_event(struct
+@@ -192,6 +202,8 @@ static int fanotify_handle_event(struct
  	BUILD_BUG_ON(FAN_OPEN_PERM != FS_OPEN_PERM);
  	BUILD_BUG_ON(FAN_ACCESS_PERM != FS_ACCESS_PERM);
  	BUILD_BUG_ON(FAN_ONDIR != FS_ISDIR);
@@ -34,7 +37,37 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.c 
  
  	if (!fanotify_should_send_event(iter_info, mask, data, data_type))
  		return 0;
-@@ -260,8 +269,14 @@ static void fanotify_free_event(struct f
+@@ -201,6 +213,19 @@ static int fanotify_handle_event(struct
+ 
+ #ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
+ 	if (mask & FAN_ALL_PERM_EVENTS) {
++		spin_lock(&group->notification_lock);
++		if (read_count_perm_event(group)
++		    && time_after_eq(jiffies, group->fanotify_data.time_last_response + time_wait_response)){ 
++			atomic64_inc(&count_timeout_perm_event);
++			spin_unlock(&group->notification_lock);
++			return 0;
++		}
++		spin_unlock(&group->notification_lock);
++	}
++#endif
++
++#ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
++	if (mask & FAN_ALL_PERM_EVENTS) {
+ 		/*
+ 		 * fsnotify_prepare_user_wait() fails if we race with mark
+ 		 * deletion.  Just let the operation pass in that case.
+@@ -229,6 +254,9 @@ static int fanotify_handle_event(struct
+ 
+ #ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
+ 	if (mask & FAN_ALL_PERM_EVENTS) {
++		spin_lock(&group->notification_lock);
++		inc_count_perm_event(group);
++		spin_unlock(&group->notification_lock);
+ 		ret = fanotify_get_response(group, FANOTIFY_PE(fsn_event),
+ 					    iter_info);
+ 		fsnotify_destroy_event(group, fsn_event);
+@@ -260,8 +288,14 @@ static void fanotify_free_event(struct f
  	put_pid(event->tgid);
  #ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
  	if (fsn_event->mask & FAN_ALL_PERM_EVENTS) {
@@ -52,8 +85,8 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.c 
  	}
  #endif
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.h linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify.h
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.h	2020-12-05 10:41:36.664591423 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify.h	2020-12-05 10:42:08.201554049 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.h	2020-12-05 18:12:52.382013418 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify.h	2020-12-06 23:46:20.545130079 +0800
 @@ -31,6 +31,7 @@ struct fanotify_event_info {
   */
  struct fanotify_perm_event_info {
@@ -62,9 +95,31 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify.h 
  	int response;	/* userspace answer to question */
  	int fd;		/* fd we passed to userspace for this event */
  };
+@@ -40,6 +41,21 @@ FANOTIFY_PE(struct fsnotify_event *fse)
+ {
+ 	return container_of(fse, struct fanotify_perm_event_info, fae.fse);
+ }
++
++static inline void inc_count_perm_event(struct fsnotify_group *group)
++{
++	atomic64_inc(&group->fanotify_data.count_perm_event);
++}
++
++static inline void dec_count_perm_event(struct fsnotify_group *group)
++{
++	atomic64_dec(&group->fanotify_data.count_perm_event);
++}
++
++static inline int read_count_perm_event(struct fsnotify_group *group)
++{
++	return atomic64_read(&group->fanotify_data.count_perm_event);
++}
+ #endif
+ 
+ static inline struct fanotify_event_info *FANOTIFY_E(struct fsnotify_event *fse)
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_user.c linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify_user.c
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_user.c	2020-12-05 10:41:36.664591423 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify_user.c	2020-12-05 12:54:28.665106675 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_user.c	2020-12-05 18:12:52.382013418 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fanotify/fanotify_user.c	2020-12-06 23:53:08.787787450 +0800
 @@ -14,6 +14,7 @@
  #include <linux/types.h>
  #include <linux/uaccess.h>
@@ -73,16 +128,16 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
  
  #include <asm/ioctls.h>
  
-@@ -44,6 +45,63 @@ struct kmem_cache *fanotify_mark_cache _
+@@ -44,6 +45,96 @@ struct kmem_cache *fanotify_mark_cache _
  struct kmem_cache *fanotify_event_cachep __read_mostly;
  struct kmem_cache *fanotify_perm_event_cachep __read_mostly;
  
 +#ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
-+static unsigned long time_wait_response = HZ/50;
++unsigned long time_wait_response = 10;
 +static unsigned long min_time_wait_response = 0;
 +static unsigned long max_time_wait_response = HZ*5;
 +
-+static unsigned long interval_timer   = HZ/50; 
++static unsigned long interval_timer   = 10; 
 +static unsigned long min_interval_timer   = 1; 
 +static unsigned long max_interval_timer   = HZ*5; 
 +
@@ -91,6 +146,11 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
 +static int max_response_timeout = FAN_DENY;
 +
 +extern unsigned long max_time_do_perm;
++
++extern atomic64_t count_timeout_perm_event;
++static int proc_count_timeout_perm_event(struct ctl_table *ctl, int write,
++			   void __user *buffer, size_t *lenp,
++			   loff_t *ppos);
 +
 +#ifdef CONFIG_SYSCTL
 +#include <linux/sysctl.h>
@@ -101,6 +161,13 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
 +		.maxlen		= sizeof(max_time_do_perm),
 +		.mode		= 0444,
 +		.proc_handler	= proc_doulongvec_minmax,
++	},
++	{
++		.procname	= "count_timeout_perm_event",
++		.data		= &count_timeout_perm_event,
++		.maxlen		= sizeof(count_timeout_perm_event),
++		.mode		= 0644,
++		.proc_handler	= proc_count_timeout_perm_event,
 +	},
 +	{
 +		.procname	= "time_wait_response",
@@ -131,13 +198,51 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
 +	},
 +	{ }
 +};
++
++
++static int proc_count_timeout_perm_event(struct ctl_table *ctl, int write,
++			   void __user *buffer, size_t *lenp,
++			   loff_t *ppos)
++{
++	unsigned long  count = atomic64_read(&count_timeout_perm_event);
++	int ret = 0;
++
++	struct ctl_table tmp = {
++		.data = &count,
++		.maxlen = sizeof(count),
++		.mode = ctl->mode,
++	};
++
++	ret = proc_doulongvec_minmax(&tmp, write, buffer, lenp, ppos); 
++	if (write && count == 0)        //only clear count_timeout_perm_event
++		atomic64_set(&count_timeout_perm_event, count);
++
++	return ret;
++}
 +#endif /* CONFIG_SYSCTL */
 +#endif /* CONFIG_FANOTIFY_ACCESS_PERMISSIONS */
 +
  /*
   * Get an fsnotify notification event if one exists and is small
   * enough to fit in "count". Return an error pointer if the count
-@@ -315,8 +373,12 @@ static ssize_t fanotify_read(struct file
+@@ -157,6 +248,7 @@ static struct fanotify_perm_event_info *
+ 		return_e = event;
+ 		break;
+ 	}
++	group->fanotify_data.time_last_response = jiffies;
+ 	spin_unlock(&group->notification_lock);
+ 
+ 	pr_debug("%s: found return_re=%p\n", __func__, return_e);
+@@ -273,6 +365,8 @@ static ssize_t fanotify_read(struct file
+ 	while (1) {
+ 		spin_lock(&group->notification_lock);
+ 		kevent = get_one_event(group, count);
++		if (kevent && !IS_ERR(kevent) && (kevent->mask & FAN_ALL_PERM_EVENTS)) 
++			dec_count_perm_event(group);
+ 		spin_unlock(&group->notification_lock);
+ 
+ 		if (IS_ERR(kevent)) {
+@@ -315,13 +409,18 @@ static ssize_t fanotify_read(struct file
  			fsnotify_destroy_event(group, kevent);
  		} else {
  #ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
@@ -151,24 +256,36 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
  				wake_up(&group->fanotify_data.access_waitq);
  			} else {
  				spin_lock(&group->notification_lock);
-@@ -373,6 +435,7 @@ static int fanotify_release(struct inode
+ 				list_add_tail(&kevent->list,
+ 					&group->fanotify_data.access_list);
++				inc_count_perm_event(group);
+ 				spin_unlock(&group->notification_lock);
+ 			}
+ #endif
+@@ -373,6 +472,7 @@ static int fanotify_release(struct inode
  	struct fanotify_perm_event_info *event, *next;
  	struct fsnotify_event *fsn_event;
  
-+	del_timer_sync(&group->timer_response_perm);
++	del_timer_sync(&group->fanotify_data.timer_response_perm);
  	/*
  	 * Stop new events from arriving in the notification queue. since
  	 * userspace cannot use fanotify fd anymore, no event can enter or
-@@ -712,6 +775,50 @@ static int fanotify_add_inode_mark(struc
+@@ -712,6 +812,62 @@ static int fanotify_add_inode_mark(struc
  	return 0;
  }
  
 +#ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
 +static void fanotify_response_timeout_work(struct work_struct *work)
 +{
-+	struct fsnotify_group *group = container_of(work, struct fsnotify_group, work);
++	struct fanotify_group_private_data *fanotify_data = 
++                              container_of(work, struct fanotify_group_private_data, work);
++	struct fsnotify_group *group = container_of(fanotify_data, struct fsnotify_group, fanotify_data);
 +	struct fanotify_perm_event_info *event, *next;
 +	struct fsnotify_event *fsn_event, *fsn_next;
++
++
++	if (read_count_perm_event(group) == 0)
++		return;
 +	/*
 +	 * Process all permission events on access_list and notification queue
 +	 * and simulate reply from userspace.
@@ -179,6 +296,8 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
 +		if (time_after(jiffies, event->start_time + time_wait_response)) {
 +			list_del_init(&event->fae.fse.list);
 +			event->response = response_timeout;
++			dec_count_perm_event(group);
++			atomic64_inc(&count_timeout_perm_event);
 +		}
 +	}
 +
@@ -187,9 +306,11 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
 +		if ((fsn_event->mask & FAN_ALL_PERM_EVENTS)) {
 +			event = FANOTIFY_PE(fsn_event);
 +			if (time_after(jiffies, event->start_time + time_wait_response)) {
-+				group->q_len--;
 +				list_del_init(&event->fae.fse.list);
 +				event->response = response_timeout;
++				group->q_len--;
++				dec_count_perm_event(group);
++				atomic64_inc(&count_timeout_perm_event);
 +			}
 +		}
 +	}
@@ -200,9 +321,11 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
 +
 +static void fanotify_response_timeout_timer(struct timer_list *t)
 +{
-+	struct fsnotify_group *group = from_timer(group, t, timer_response_perm);
-+	queue_work(system_unbound_wq, &group->work);
-+	mod_timer(&group->timer_response_perm, 
++	struct fanotify_group_private_data *fanotify_data = NULL;
++
++	fanotify_data = from_timer(fanotify_data, t, timer_response_perm);	
++	queue_work(system_unbound_wq, &fanotify_data->work);
++	mod_timer(&fanotify_data->timer_response_perm, 
 +			jiffies + interval_timer);
 +}
 +#endif
@@ -210,22 +333,24 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fanotify/fanotify_us
  /* fanotify syscalls */
  SYSCALL_DEFINE2(fanotify_init, unsigned int, flags, unsigned int, event_f_flags)
  {
-@@ -825,6 +932,12 @@ SYSCALL_DEFINE2(fanotify_init, unsigned
+@@ -825,6 +981,14 @@ SYSCALL_DEFINE2(fanotify_init, unsigned
  	if (fd < 0)
  		goto out_destroy_group;
  
 +#ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
-+	INIT_WORK(&group->work, fanotify_response_timeout_work);  
-+	timer_setup(&group->timer_response_perm, fanotify_response_timeout_timer, 0);
-+	mod_timer(&group->timer_response_perm, 
++	atomic64_set(&group->fanotify_data.count_perm_event, 0);
++	group->fanotify_data.time_last_response = jiffies;
++	INIT_WORK(&group->fanotify_data.work, fanotify_response_timeout_work);  
++	timer_setup(&group->fanotify_data.timer_response_perm, fanotify_response_timeout_timer, 0);
++	mod_timer(&group->fanotify_data.timer_response_perm, 
 +			jiffies + interval_timer);
 +#endif
  	return fd;
  
  out_destroy_group:
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fsnotify.c linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fsnotify.c
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fsnotify.c	2020-12-05 10:41:36.661591355 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fsnotify.c	2020-12-05 10:42:08.201554049 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fsnotify.c	2020-12-05 18:12:52.379013363 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/fs/notify/fsnotify.c	2020-12-06 23:46:20.546130067 +0800
 @@ -393,7 +393,7 @@ static __init int fsnotify_init(void)
  {
  	int ret;
@@ -236,8 +361,8 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/fs/notify/fsnotify.c linux-3.1
  	ret = init_srcu_struct(&fsnotify_mark_srcu);
  	if (ret)
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fanotify.h linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fanotify.h
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fanotify.h	2020-12-05 10:41:34.183535239 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fanotify.h	2020-12-05 10:42:08.201554049 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fanotify.h	2020-12-05 18:12:49.975968811 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fanotify.h	2020-12-06 23:46:20.546130067 +0800
 @@ -2,7 +2,10 @@
  #define _LINUX_FANOTIFY_H
  
@@ -250,8 +375,8 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fanotify.h linux
 +extern struct ctl_table fanotify_table[]; /* for sysctl */
  #endif /* _LINUX_FANOTIFY_H */
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify_backend.h linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fsnotify_backend.h
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify_backend.h	2020-12-05 10:41:34.131534061 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fsnotify_backend.h	2020-12-05 11:06:56.846313084 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify_backend.h	2020-12-05 18:12:49.924967865 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fsnotify_backend.h	2020-12-06 23:46:20.546130067 +0800
 @@ -16,6 +16,7 @@
  #include <linux/spinlock.h>
  #include <linux/types.h>
@@ -301,18 +426,21 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify_backend
  
  struct fsnotify_group;
  struct fsnotify_event;
-@@ -142,6 +147,8 @@ struct fsnotify_group {
- 	wait_queue_head_t notification_waitq;	/* read() on the notification file blocks on this waitq */
- 	unsigned int q_len;			/* events on the queue */
- 	unsigned int max_events;		/* maximum events allowed on the list */
-+	struct timer_list  timer_response_perm;     /* */
-+	struct work_struct work; 
- 	/*
- 	 * Valid fsnotify group priorities.  Events are send in order from highest
- 	 * priority to lowest priority.  We default to the lowest priority.
+@@ -183,6 +188,11 @@ struct fsnotify_group {
+ 			/* allows a group to block waiting for a userspace response */
+ 			struct list_head access_list;
+ 			wait_queue_head_t access_waitq;
++
++			unsigned long time_last_response;        /* time last response */
++			struct timer_list  timer_response_perm;  /* timer */
++			struct work_struct work;                 /* process timeout response */
++			atomic64_t count_perm_event;             /* count perm event */ 
+ #endif /* CONFIG_FANOTIFY_ACCESS_PERMISSIONS */
+ 			int f_flags;
+ 			unsigned int max_marks;
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify.h linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fsnotify.h
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify.h	2020-12-05 10:41:34.170534944 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fsnotify.h	2020-12-05 10:42:08.202554086 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify.h	2020-12-05 18:12:49.962968570 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/include/linux/fsnotify.h	2020-12-06 23:46:20.547130054 +0800
 @@ -25,6 +25,20 @@ static inline int fsnotify_parent(const
  	return __fsnotify_parent(path, dentry, mask);
  }
@@ -365,8 +493,8 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/linux/fsnotify.h linux
  	fsnotify_parent(path, NULL, mask);
  	fsnotify(inode, mask, path, FSNOTIFY_EVENT_PATH, NULL, 0);
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/uapi/linux/fanotify.h linux-3.10.0-1127.13.1.el7.x86_64/include/uapi/linux/fanotify.h
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/uapi/linux/fanotify.h	2020-12-05 10:41:33.986530778 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/include/uapi/linux/fanotify.h	2020-12-05 10:42:08.202554086 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/include/uapi/linux/fanotify.h	2020-12-05 18:12:49.782965233 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/include/uapi/linux/fanotify.h	2020-12-06 23:46:20.547130054 +0800
 @@ -9,11 +9,13 @@
  #define FAN_CLOSE_WRITE		0x00000008	/* Writtable file closed */
  #define FAN_CLOSE_NOWRITE	0x00000010	/* Unwrittable file closed */
@@ -400,8 +528,8 @@ diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/include/uapi/linux/fanotify.h 
  #define FAN_ALL_OUTGOING_EVENTS	(FAN_ALL_EVENTS |\
  				 FAN_ALL_PERM_EVENTS |\
 diff -Nurp linux-3.10.0-1127.13.1.el7.x86_64.orig/kernel/sysctl.c linux-3.10.0-1127.13.1.el7.x86_64/kernel/sysctl.c
---- linux-3.10.0-1127.13.1.el7.x86_64.orig/kernel/sysctl.c	2020-12-05 10:41:36.554588932 +0800
-+++ linux-3.10.0-1127.13.1.el7.x86_64/kernel/sysctl.c	2020-12-05 10:42:08.202554086 +0800
+--- linux-3.10.0-1127.13.1.el7.x86_64.orig/kernel/sysctl.c	2020-12-05 18:12:52.282011564 +0800
++++ linux-3.10.0-1127.13.1.el7.x86_64/kernel/sysctl.c	2020-12-06 23:46:20.547130054 +0800
 @@ -156,6 +156,9 @@ static unsigned long hung_task_timeout_m
  #ifdef CONFIG_INOTIFY_USER
  #include <linux/inotify.h>

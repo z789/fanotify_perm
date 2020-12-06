@@ -1,16 +1,18 @@
 从kernel v4.20移植 fanotify的 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能到v3.10.0，并增加FAN_*_PERM事件的超时处理功能。即在内核中每个group增加一个定时器，周期扫描*_PERM事件,如果接受返回时间超时，就模拟应用层发送设置的默认response。
 
 /proc/sys/fs/fanotify/time_wait_response, 等待应用层response的最大时间，单位msec
-默认值是HZ/50， 范围是[0, HZ*5]
+默认值是10 jiffies， 范围是[0, HZ*5]
 
 /proc/sys/fs/fanotify/response_timeout,   等待应用层response超时时，*_PERM事件的默认处理行为。
 默认值是FAN_ALLOW， 范围是[FAN_ALLOW, FAN_ALLOW], 即[1,2]
 
 /proc/sys/fs/fanotify/interval_timer,   定时期的扫描周期，单位msec
-默认值是HZ/50， 范围是[1, HZ*5]
+默认值是10 jiffies， 范围是[1, HZ*5]
 
 /proc/sys/fs/fanotify/max_time_do_perm,  统计处理perm时间的最大值，是个只读文件. 单位usec。 主要用来性能分析。
 
+/proc/sys/fs/fanotify/count_timeout_perm_event,  统计处理超时perm事件数量，单位是个。 主要用来性能分析。
+该文件权限是644， 但只能写入值0， 表示重置统计。
 
 fanotify_exec-4.18.0-80.patch 无超时处理功能。
 fanotify_exec-3.10.0.patch 
