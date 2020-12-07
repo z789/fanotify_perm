@@ -6,7 +6,7 @@
 /proc/sys/fs/fanotify/response_timeout,   等待应用层response超时时，*_PERM事件的默认处理行为。
 默认值是FAN_ALLOW， 范围是[FAN_ALLOW, FAN_ALLOW], 即[1,2]
 
-/proc/sys/fs/fanotify/interval_timer,   定时期的扫描周期，单位msec
+/proc/sys/fs/fanotify/interval_timer,   定时器的扫描周期，单位msec
 默认值是10 jiffies， 范围是[1, HZ*5]
 
 /proc/sys/fs/fanotify/max_time_do_perm,  统计处理perm时间的最大值，是个只读文件. 单位usec。 主要用来性能分析。
