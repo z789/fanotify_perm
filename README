@@ -19,8 +19,8 @@
 
 
 
-fanotify_exec-3.10.0.patch fanotify_exec-4.18.0-80.patch 增加 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能。
-fanotify_exec_perm_timeout-3.10.0.patch 增加超时处理功能和一些 sysctl entry
+fanotify_exec-3.10.0.patch fanotify_exec-4.18.0-80.patch 只增加 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能。
+fanotify_exec_perm_timeout-3.10.0.patch 并增加超时处理功能和一些 sysctl entry
 
 应用:
 fapolicyd 
