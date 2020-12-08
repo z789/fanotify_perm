@@ -1,3 +1,4 @@
+内核补丁:
 
 1.  从kernel v4.20移植 fanotify的 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能到v3.10.0。
 2.  并增加FAN_*_PERM事件的超时处理功能。即在内核中每个group增加一个定时器，周期扫描*_PERM事件,如果接收返回时间超时，就模拟应用层发送设置的默认response。
@@ -6,7 +7,7 @@
 默认值是10 jiffies， 范围是[0, HZ*5]
 
 /proc/sys/fs/fanotify/response_timeout,   等待应用层response超时时，*_PERM事件的默认处理行为。
-默认值是FAN_ALLOW， 范围是[FAN_ALLOW, FAN_ALLOW], 即[1,2]
+默认值是FAN_ALLOW， 范围是[FAN_ALLOW, FAN_DENY], 即[1,2]
 
 /proc/sys/fs/fanotify/interval_timer,   定时器的扫描周期，单位msec
 默认值是10 jiffies， 范围是[1, HZ*5]
@@ -20,3 +21,9 @@
 
 fanotify_exec-3.10.0.patch fanotify_exec-4.18.0-80.patch 增加 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能。
 fanotify_exec_perm_timeout-3.10.0.patch 增加超时处理功能和一些 sysctl entry
+
+应用:
+fapolicyd 
+https://github.com/linux-application-whitelisting/fapolicyd
+
+为centos7 打包fapolicyd v0.9.1 和 v1.0.1。
