@@ -17,13 +17,20 @@
 /proc/sys/fs/fanotify/count_timeout_perm_event,  统计处理超时perm事件数量，单位是个。 主要用来性能分析。
 该文件权限是644， 但只能写入值0， 表示重置统计。
 
-
-
 fanotify_exec-3.10.0.patch fanotify_exec-4.18.0-80.patch 只增加 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能。
 fanotify_exec_perm_timeout-3.10.0.patch 并增加超时处理功能和一些 sysctl entry
+
 
 应用:
 fapolicyd 
 https://github.com/linux-application-whitelisting/fapolicyd
-
 为centos7 打包fapolicyd v0.9.1 和 v1.0.1。
+
+存在的问题：
+    性能不是很好。经测试，开启后，机器性能下降50%。 
+    原因有两个： 1. 内核等待应用层的权限判断回复， 如果应用层进行权限判断花费的时间多，那内核就一直等待，直到收到回复。
+               2. 小数据频繁在内核和应用之间传输。
+    内核应用上面的超时补丁后，性能下降15%。
+    
+                 
+
