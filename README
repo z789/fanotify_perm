@@ -13,12 +13,13 @@
 默认值是10 jiffies， 范围是[1, HZ*5]
 
 /proc/sys/fs/fanotify/max_time_do_perm,  统计处理perm时间的最大值，是个只读文件. 单位usec。 主要用来性能分析。
+该文件权限是644， 但只能写入值0， 表示重置统计。
 
 /proc/sys/fs/fanotify/count_timeout_perm_event,  统计处理超时perm事件数量，单位是个。 主要用来性能分析。
 该文件权限是644， 但只能写入值0， 表示重置统计。
 
 fanotify_exec-3.10.0.patch fanotify_exec-4.18.0-80.patch 只增加 FAN_OPEN_EXEC 和 FAN_OPEN_EXEC_PERM功能。
-fanotify_exec_perm_timeout-3.10.0.patch 并增加超时处理功能和一些 sysctl entry
+fanotify_perm_timeout-3.10.0.patch 并增加超时处理功能和一些 sysctl entry
 
 
 应用:
@@ -27,11 +28,13 @@ https://github.com/linux-application-whitelisting/fapolicyd
 为centos7 打包fapolicyd v0.9.1 和 v1.0.1。
 
 存在的问题：
-    性能不是很好。经测试，开启后，机器性能下降50%。 
-    原因有两个： 1. 内核等待应用层的权限判断回复， 如果应用层进行权限判断花费的时间多，那内核就一直等待，直到收到回复。
-               2. 小数据频繁在内核和应用之间传输。
+    1. 性能不是很好。经测试，开启后，机器性能下降50%。 
+       原因有两个： (1). 内核等待应用层的权限判断回复， 如果应用层进行权限判断花费的时间多，那内核就一直等待，直到收到回复。
+                    (2). 小数据频繁在内核和应用之间传输。
                
-    如果fapolicyd错误配置，或者bug等原因，导致不读事件也不回复事件， 系统卡死。使用上面的超时补丁可以解决问题。
+    2. 如果fapolicyd错误配置，或者bug等原因，导致不读事件也不回复事件， 系统卡死。使用上面的超时补丁可以解决问题。
+       尽管kernel从v5.1开始，等待response由不可中断改为可以接收信号，但仍不能解决该问题。 一个可能的解决方案是：把kill等发送信号的程序单独放在
+       一个分区中，而fapolicyd不监控该分区的挂载目录。或者使用超时补丁。
     
                  
 
