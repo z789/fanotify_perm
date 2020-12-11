@@ -12,7 +12,7 @@
 /proc/sys/fs/fanotify/interval_timer,   定时器的扫描周期，单位msec
 默认值是10 jiffies， 范围是[1, HZ*5]
 
-/proc/sys/fs/fanotify/max_time_do_perm,  统计处理perm时间的最大值. 单位usec。 主要用来性能分析。
+/proc/sys/fs/fanotify/max_time_do_perm,  处理perm事件的最长时间. 单位usec。 主要用来性能分析。
 该文件权限是644， 但只能写入值0， 表示重置统计。
 
 /proc/sys/fs/fanotify/count_timeout_perm_event,  统计处理超时perm事件数量，单位是个。 主要用来性能分析。
